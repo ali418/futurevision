@@ -1,0 +1,24 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "provider": "node",
+  "packages": {
+    "node": "22"
+  },
+  "steps": {
+    "install": {
+      "commands": [
+        "npm install --prefix futurevision-api",
+        "npm install --prefix futurevision-ui"
+      ]
+    },
+    "build": {
+      "inputs": [{ "step": "install" }],
+      "commands": [
+        "npm run build --prefix futurevision-ui"
+      ]
+    }
+  },
+  "deploy": {
+    "startCommand": "node futurevision-api/server.js"
+  }
+}
