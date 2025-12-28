@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
+import Container from '@mui/material/Container';
 import Tabs from '@mui/material/Tabs';
 import Tab from '@mui/material/Tab';
 import TextField from '@mui/material/TextField';
@@ -37,9 +38,9 @@ export default function VisaUganda() {
   };
 
   return (
-    <Box sx={{ p: 3 }}>
+    <Container sx={{ py: 6 }}>
       <Typography variant="h4" gutterBottom>
-        Visa for Uganda
+        فيزا يوغندا
       </Typography>
       <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
         <Tabs value={value} onChange={handleChange} aria-label="visa tabs">
@@ -75,6 +76,6 @@ export default function VisaUganda() {
           <Button variant="contained" startIcon={<SearchRoundedIcon />}>استعلام</Button>
         </Stack>
       </TabPanel>
-    </Box>
+    </Container>
   );
 }

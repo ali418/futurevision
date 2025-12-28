@@ -9,14 +9,14 @@ export default function ParticleBackground() {
     const ctx = canvas.getContext('2d')!
     let w = (canvas.width = window.innerWidth)
     let h = (canvas.height = window.innerHeight)
-    const particles = Array.from({ length: 90 }).map(() => ({
+    const particles = Array.from({ length: 70 }).map(() => ({
       x: Math.random() * w,
       y: Math.random() * h,
       vx: (Math.random() - 0.5) * 0.2,
       vy: (Math.random() - 0.5) * 0.2,
       r: Math.random() * 1.8 + 0.6,
-      c1: 'rgba(46,124,194,0.8)',
-      c2: 'rgba(141,112,255,0.8)'
+      c1: 'rgba(14,165,233,0.7)',
+      c2: 'rgba(20,184,166,0.6)'
     }))
 
     const onResize = () => {
@@ -59,5 +59,5 @@ export default function ParticleBackground() {
     }
   }, [])
 
-  return <canvas ref={ref} style={{ position: 'fixed', inset: 0, zIndex: 1, opacity: 0.6, pointerEvents: 'none' }} />
+  return <canvas ref={ref} style={{ position: 'fixed', inset: 0, zIndex: 1, opacity: 0.5, pointerEvents: 'none' }} />
 }

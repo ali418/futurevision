@@ -8,10 +8,10 @@ export default function LogoOverlay() {
       left: '50%',
       top: '50%',
       transform: 'translate(-50%, -50%)',
-      width: { xs: '80vw', md: '40vw' },
-      maxWidth: '600px',
-      opacity: 1,
-      filter: 'drop-shadow(0 0 50px rgba(212,175,55,0.35))',
+      width: { xs: '78vw', md: '40vw' },
+      maxWidth: '520px',
+      opacity: 0.6,
+      filter: 'brightness(1.05) drop-shadow(0 0 24px rgba(14,165,233,0.45))',
       zIndex: 999,
       pointerEvents: 'none'
     }} />

@@ -1,0 +1,801 @@
+حأشرحها كأنك كاتب **System Spec للمبرمج الباك إند** خطوة خطوة:
+(كل شيء على **PostgreSQL** + **Express + pg**)
+
+---
+
+## 1. فكرة الداتابيز للنظام ده
+
+عندك 3 أجزاء رئيسية لازم الداتابيز تغطيها:
+
+1. **إعدادات الموقع**
+
+   * عنوان الهيرو في الهوم
+   * حجم/ستايل الشعار (logo size)
+2. **طلبات العملاء (Requests)**
+
+   * البيانات الجاية من صفحة `/request`
+3. **المستخدمين + لوحة الإدمن (Auth + Admin)**
+
+   * جدول users فيه الإدمن + أي staff
+   * نستخدمه عشان نسجّل دخول ونحمي `/admin` وباقي الـAPI الخاصة بالإدارة
+
+ممكن بعدين توسّعها (services, jobs, tourism_destinations…) لكن نبدأ بالأساسي.
+
+---
+
+## 2. إنشاء قاعدة البيانات
+
+على PostgreSQL:
+
+```sql
+CREATE DATABASE futurevision;
+```
+
+بعدها في `.env` في مجلد `futurevision-api`:
+
+```env
+DATABASE_URL=postgres://username:password@localhost:5432/futurevision
+JWT_SECRET=super_secret_key_here
+```
+
+---
+
+## 3. جداول أساسية في PostgreSQL
+
+### 3.1 جدول الإعدادات `settings`
+
+صف واحد فقط يمسك إعدادات الهيرو والشعار، ويمكن تكبره بعدين.
+
+```sql
+CREATE TABLE IF NOT EXISTS settings (
+    id          SERIAL PRIMARY KEY,
+    hero_title  TEXT NOT NULL,
+    logo_size   VARCHAR(50) NOT NULL DEFAULT 'md', -- مثلا sm / md / lg
+    updated_at  TIMESTAMP NOT NULL DEFAULT NOW()
+);
+```
+
+> ملاحظة: تقدر عند تشغيل السيرفر لو الجدول فاضي تعمل INSERT default row.
+
+---
+
+### 3.2 نوع حالة الطلب + جدول الطلبات `requests`
+
+أولاً نعمل نوع enum لحالات الطلب:
+
+```sql
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'request_status') THEN
+        CREATE TYPE request_status AS ENUM ('pending', 'in_progress', 'completed', 'cancelled');
+    END IF;
+END$$;
+```
+
+بعدين جدول الطلبات:
+
+```sql
+CREATE TABLE IF NOT EXISTS requests (
+    id          SERIAL PRIMARY KEY,
+    full_name   VARCHAR(150) NOT NULL,
+    phone       VARCHAR(50) NOT NULL,
+    service     VARCHAR(100) NOT NULL,   -- مثل Visa, Tourism, Jobs...
+    destination VARCHAR(100),            -- البلد أو الوجهة
+    notes       TEXT,
+    status      request_status NOT NULL DEFAULT 'pending',
+    created_at  TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMP NOT NULL DEFAULT NOW()
+);
+```
+
+---
+
+### 3.3 جدول المستخدمين `users` (للإدمن واليوزر العادي)
+
+نخلي فيه role بسيط: `admin`, `staff`, `customer`.
+
+```sql
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'user_role') THEN
+        CREATE TYPE user_role AS ENUM ('admin', 'staff', 'customer');
+    END IF;
+END$$;
+```
+
+ثم:
+
+```sql
+CREATE TABLE IF NOT EXISTS users (
+    id             SERIAL PRIMARY KEY,
+    username       VARCHAR(100) UNIQUE NOT NULL,
+    email          VARCHAR(150) UNIQUE,
+    password_hash  VARCHAR(255) NOT NULL,
+    role           user_role NOT NULL DEFAULT 'customer',
+    created_at     TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at     TIMESTAMP NOT NULL DEFAULT NOW()
+);
+```
+
+> **المبدأ**: ما نخزن الباسورد نص عادي، نخزن `password_hash` باستخدام `bcrypt`.
+
+---
+
+## 4. تهيئة الجداول داخل `futurevision-api/server.js`
+
+داخل `server.js` (أو ملف db/init) تكتب سكربت يشتغل عند الإقلاع:
+
+```js
+import pkg from 'pg';
+const { Pool } = pkg;
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
+
+export async function initDb() {
+  // هنا تحط نفس أوامر الـ CREATE TABLE / CREATE TYPE لكن كـ strings وتعمل query لها
+  await pool.query(`
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'request_status') THEN
+            CREATE TYPE request_status AS ENUM ('pending', 'in_progress', 'completed', 'cancelled');
+        END IF;
+    END$$;
+  `);
+
+  await pool.query(`
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'user_role') THEN
+            CREATE TYPE user_role AS ENUM ('admin', 'staff', 'customer');
+        END IF;
+    END$$;
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS settings (
+      id SERIAL PRIMARY KEY,
+      hero_title  TEXT NOT NULL,
+      logo_size   VARCHAR(50) NOT NULL DEFAULT 'md',
+      updated_at  TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS requests (
+      id SERIAL PRIMARY KEY,
+      full_name   VARCHAR(150) NOT NULL,
+      phone       VARCHAR(50) NOT NULL,
+      service     VARCHAR(100) NOT NULL,
+      destination VARCHAR(100),
+      notes       TEXT,
+      status      request_status NOT NULL DEFAULT 'pending',
+      created_at  TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at  TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      username       VARCHAR(100) UNIQUE NOT NULL,
+      email          VARCHAR(150) UNIQUE,
+      password_hash  VARCHAR(255) NOT NULL,
+      role           user_role NOT NULL DEFAULT 'customer',
+      created_at     TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at     TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  // إدخال صف إعدادات افتراضي لو الجدول فاضي
+  await pool.query(`
+    INSERT INTO settings (hero_title, logo_size)
+    SELECT 'Future Vision – رحلات وخدمات متكاملة', 'md'
+    WHERE NOT EXISTS (SELECT 1 FROM settings);
+  `);
+
+  // إنشاء أدمن افتراضي لو مافي أي يوزر
+  const adminUsername = 'admin';
+  const adminPassword = 'admin123'; // غيّرها يدوي وبعدين
+
+  const res = await pool.query('SELECT COUNT(*) FROM users');
+  if (parseInt(res.rows[0].count, 10) === 0) {
+    const bcrypt = await import('bcrypt');
+    const hashed = await bcrypt.hash(adminPassword, 10);
+    await pool.query(
+      `INSERT INTO users (username, password_hash, role)
+       VALUES ($1, $2, 'admin')`,
+      [adminUsername, hashed]
+    );
+    console.log('Default admin created:', adminUsername, adminPassword);
+  }
+}
+
+export { pool };
+```
+
+وفي `server.js` الرئيسي:
+
+```js
+import express from 'express';
+import { initDb, pool } from './db.js';
+
+const app = express();
+app.use(express.json());
+
+await initDb();
+// .. بقية الروتات
+```
+
+---
+
+## 5. ربط الـAPI بالداتابيز
+
+### 5.1 إعدادات الموقع `/api/settings`
+
+* **GET**: يرجع صف الإعدادات
+* **PUT**: يحدّث العنوان وحجم الشعار (محمي للمشرف)
+
+```js
+app.get('/api/settings', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM settings LIMIT 1');
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch settings' });
+  }
+});
+
+// هذا لازم يكون محمي بـ JWT + role = admin
+app.put('/api/settings', authMiddleware('admin'), async (req, res) => {
+  const { hero_title, logo_size } = req.body;
+  try {
+    const result = await pool.query(
+      `UPDATE settings
+       SET hero_title = $1,
+           logo_size  = $2,
+           updated_at = NOW()
+       WHERE id = 1
+       RETURNING *`,
+      [hero_title, logo_size]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to update settings' });
+  }
+});
+```
+
+---
+
+### 5.2 الطلبات `/api/requests`
+
+* **GET**: جلب كل الطلبات (للإدمن)
+* **POST**: من صفحة `/request` (مفتوحة للزبون)
+* **PATCH**: تغيير حالة الطلب (إدمن)
+* **DELETE**: حذف طلب (إدمن)
+
+```js
+// إنشاء طلب من الفورم (بدون auth)
+app.post('/api/requests', async (req, res) => {
+  const { full_name, phone, service, destination, notes } = req.body;
+  try {
+    const result = await pool.query(
+      `INSERT INTO requests (full_name, phone, service, destination, notes)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [full_name, phone, service, destination, notes]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to create request' });
+  }
+});
+
+// جلب الطلبات – محمي للإدمن
+app.get('/api/requests', authMiddleware('admin'), async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT * FROM requests ORDER BY created_at DESC`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch requests' });
+  }
+});
+
+// تحديث حالة الطلب
+app.patch('/api/requests/:id', authMiddleware('admin'), async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body; // pending | in_progress | completed | cancelled
+  try {
+    const result = await pool.query(
+      `UPDATE requests
+       SET status = $1,
+           updated_at = NOW()
+       WHERE id = $2
+       RETURNING *`,
+      [status, id]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to update request' });
+  }
+});
+
+// حذف طلب
+app.delete('/api/requests/:id', authMiddleware('admin'), async (req, res) => {
+  const { id } = req.params;
+  try {
+    await pool.query('DELETE FROM requests WHERE id = $1', [id]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to delete request' });
+  }
+});
+```
+
+---
+
+## 6. نظام تسجيل الدخول (لوحة إدمن محمية)
+
+### 6.1 مسارات الـAuth في الـAPI
+
+* **POST /api/auth/register** (لو حاب تسمح بإنشاء يوزر جديد)
+* **POST /api/auth/login** → يرجع JWT
+* Middleware `authMiddleware` يتحقق من الـJWT + الدور (role)
+
+#### login
+
+```js
+import jwt from 'jsonwebtoken';
+import bcrypt from 'bcrypt';
+
+app.post('/api/auth/login', async (req, res) => {
+  const { username, password } = req.body;
+
+  try {
+    const result = await pool.query(
+      'SELECT * FROM users WHERE username = $1',
+      [username]
+    );
+
+    const user = result.rows[0];
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid username or password' });
+    }
+
+    const match = await bcrypt.compare(password, user.password_hash);
+    if (!match) {
+      return res.status(401).json({ error: 'Invalid username or password' });
+    }
+
+    const token = jwt.sign(
+      { id: user.id, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: '1d' }
+    );
+
+    res.json({
+      token,
+      user: { id: user.id, username: user.username, role: user.role }
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Login failed' });
+  }
+});
+```
+
+#### middleware للتحقق من التوكن + الدور
+
+```js
+function authMiddleware(requiredRole) {
+  return (req, res, next) => {
+    const authHeader = req.headers.authorization; // "Bearer token"
+
+    if (!authHeader) {
+      return res.status(401).json({ error: 'No token provided' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      req.user = decoded; // { id, role }
+
+      if (requiredRole && decoded.role !== requiredRole) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+
+      next();
+    } catch (err) {
+      console.error(err);
+      res.status(401).json({ error: 'Invalid token' });
+    }
+  };
+}
+```
+
+---
+
+## 7. ربط واجهة React بلوحة الإدمن
+
+### 7.1 صفحة `/login`
+
+* فورم بسيط: `username`, `password`
+* عند الـsubmit:
+
+  * استدعاء `POST /api/auth/login`
+  * تخزين `token` في `localStorage` أو `sessionStorage`
+  * حفظ بيانات اليوزر في React state (context أو Zustand…)
+  * توجيه إلى `/admin`
+
+### 7.2 حماية مسار `/admin` في React Router
+
+* تعمل `PrivateRoute` أو `RequireAuth` كومبوننت:
+
+  * لو مافي token → رجع المستخدم إلى `/login`
+  * لو في token → يفتح `/admin`
+* في الـreact-query لما تنفذ أي API للإدمن:
+
+  * تضيف الهيدر:
+
+    ```js
+    headers: {
+      Authorization: `Bearer ${token}`,
+    }
+    ```
+
+---
+
+## 8. النتيجة النهائية
+
+* **Postgres**:
+
+  * `settings` → يدير هيرو + الشعار للواجهة
+  * `requests` → تمسك طلبات العملاء
+  * `users` (+ roles) → تحكم في من يدخل لوحة الإدمن وكيف
+* **Express API**:
+
+  * Routes:
+
+    * `/api/settings` (GET + PUT [admin])
+    * `/api/requests` (GET [admin], POST [public], PATCH/DELETE [admin])
+    * `/api/auth/login` (للدخول)
+* **React**:
+
+  * `/` , `/services` , `/visa/...` إلخ للزبون
+  * `/request` → يرسل POST للـrequests
+  * `/login` + `/admin` → للوحة التحكم، الإدمن يغيّر الهيرو، الشعار، يتابع الطلبات، يغيّر الحالة، يحذف… إلخ.
+
+---
+
+لو عايز في الرد الجاي أقدر أكتب ليك **ملف SQL كامل جاهز** + **هيكل مجلدات futurevision-api** (auth, routes, controllers) مرتّب عشان تديه للمبرمج مباشرة.
+تمام 👌
+نضيف الآن فكرة **رفع الصور مع طلب الفيزا** بطريقة واضحة للمبرمج (Back-End + Front-End + Database).
+
+---
+
+## 1. الفكرة العامة
+
+لما الزبون يملأ فورم `/request`:
+
+* يقدر يرفع **واحدة أو أكثر صور** (جواز، إقامة، صورة شخصية، …).
+* الصور ما بتتخزن جوة PostgreSQL نفسها، لكن:
+
+  * **الملف فعليًا** في فولدر على السيرفر (مثلاً: `uploads/requests/`)، أو على خدمة سحابة (S3, Cloudinary…).
+  * وفي الداتابيز نخزن **المسار/الرابط فقط** + شوية معلومات.
+
+عشان كدا حنضيف:
+
+1. جدول جديد في PostgreSQL للملفات.
+2. تعديل API `POST /api/requests` عشان يستقبل `multipart/form-data`.
+3. تعديل React form عشان تبعت `FormData` ومعاه الصور.
+
+---
+
+## 2. تصميم الداتابيز للصور
+
+بدل ما نحط عمود واحد للصور في `requests`، الأحسن:
+
+### جدول `request_files`
+
+```sql
+CREATE TABLE IF NOT EXISTS request_files (
+    id           SERIAL PRIMARY KEY,
+    request_id   INTEGER NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+    file_url     TEXT NOT NULL,           -- المسار أو الرابط للصورة
+    file_type    VARCHAR(100),            -- image/jpeg, image/png ...
+    original_name VARCHAR(255),           -- اسم الملف الأصلي
+    file_size    INTEGER,                 -- الحجم بالبايت
+    created_at   TIMESTAMP NOT NULL DEFAULT NOW()
+);
+```
+
+* **`request_id`**: يربط كل صورة بطلب معين.
+* لو طلب انمسح → كل الصور التابعة ليه تنمسح أوتوماتيك (عشان `ON DELETE CASCADE`).
+
+---
+
+## 3. تعديل الـAPI لاستقبال الصور (Express)
+
+### 3.1 استخدام `multer` لرفع الملفات
+
+في `futurevision-api`:
+
+```bash
+npm install multer
+```
+
+ثم مثلاً في ملف `upload.js`:
+
+```js
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
+
+// تأكد الفولدر موجود
+const uploadDir = path.join(process.cwd(), 'uploads', 'requests');
+fs.mkdirSync(uploadDir, { recursive: true });
+
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    const ext = path.extname(file.originalname);
+    cb(null, uniqueSuffix + ext); // مثال: 1700000000-123456789.png
+  },
+});
+
+function fileFilter(req, file, cb) {
+  // نقبل صور فقط
+  if (!file.mimetype.startsWith('image/')) {
+    return cb(new Error('Only image files are allowed'), false);
+  }
+  cb(null, true);
+}
+
+export const upload = multer({
+  storage,
+  fileFilter,
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB لكل صورة
+  },
+});
+```
+
+وفي `server.js` (أو ملف routes):
+
+```js
+import { upload } from './upload.js';
+import { pool } from './db.js';
+
+// نخلي السيرفر يقدّر يعرض الملفات كـ static
+import path from 'path';
+import express from 'express';
+
+const app = express();
+app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
+```
+
+### 3.2 تعديل Route إنشاء الطلب `POST /api/requests`
+
+> ملاحظة: هنا الـBody ح يكون `multipart/form-data`، ما `application/json`.
+
+```js
+// "files" هو اسم الحقل حق الصور في الفورم
+app.post(
+  '/api/requests',
+  upload.array('files', 5), // نسمح مثلاً لحد 5 صور
+  async (req, res) => {
+    const { full_name, phone, service, destination, notes } = req.body;
+    const files = req.files || []; // الصور المرفوعة
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // 1) إنشاء الطلب نفسه
+      const insertReq = await client.query(
+        `INSERT INTO requests (full_name, phone, service, destination, notes)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id`,
+        [full_name, phone, service, destination, notes]
+      );
+
+      const requestId = insertReq.rows[0].id;
+
+      // 2) تخزين معلومات الصور في request_files
+      for (const file of files) {
+        const fileUrl = `/uploads/requests/${file.filename}`; // المسار النسبي اللي العميل حيستخدمه
+        await client.query(
+          `INSERT INTO request_files (request_id, file_url, file_type, original_name, file_size)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [
+            requestId,
+            fileUrl,
+            file.mimetype,
+            file.originalname,
+            file.size,
+          ]
+        );
+      }
+
+      await client.query('COMMIT');
+
+      res.status(201).json({
+        id: requestId,
+        message: 'Request created successfully',
+        files: files.length,
+      });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      console.error(err);
+      res.status(500).json({ error: 'Failed to create request with files' });
+    } finally {
+      client.release();
+    }
+  }
+);
+```
+
+### 3.3 جلب الطلبات مع صورها لـلوحة الإدمن
+
+لو حابب ترجع الطلب مع صوره في نفس الـAPI:
+
+```js
+app.get('/api/requests', authMiddleware('admin'), async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT r.*,
+              COALESCE(
+                json_agg(
+                  json_build_object(
+                    'id', f.id,
+                    'file_url', f.file_url,
+                    'file_type', f.file_type,
+                    'original_name', f.original_name,
+                    'file_size', f.file_size
+                  )
+                ) FILTER (WHERE f.id IS NOT NULL),
+                '[]'
+              ) AS files
+       FROM requests r
+       LEFT JOIN request_files f ON f.request_id = r.id
+       GROUP BY r.id
+       ORDER BY r.created_at DESC`
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch requests' });
+  }
+});
+```
+
+المخرجات لكل طلب حتكون فيها `files` كـ Array من الملفات.
+
+---
+
+## 4. تعديل واجهة React (نموذج `/request`)
+
+### 4.1 إضافة حقل رفع الصور في الفورم
+
+في `RequestForm.tsx`:
+
+```tsx
+<input
+  type="file"
+  name="files"
+  multiple
+  accept="image/*"
+  onChange={(e) => setFiles(Array.from(e.target.files || []))}
+/>
+```
+
+خلي state:
+
+```tsx
+const [files, setFiles] = useState<File[]>([]);
+```
+
+### 4.2 إرسال الطلب بـ FormData (مو JSON)
+
+بدل:
+
+```ts
+// قبل:
+await axios.post('/api/requests', {
+  full_name,
+  phone,
+  service,
+  destination,
+  notes,
+});
+```
+
+نستخدم:
+
+```ts
+const formData = new FormData();
+formData.append('full_name', fullName);
+formData.append('phone', phone);
+formData.append('service', service);
+formData.append('destination', destination || '');
+formData.append('notes', notes || '');
+
+// الملفات
+files.forEach((file) => {
+  formData.append('files', file); // لازم نفس الاسم المستخدم في multer: "files"
+});
+
+await axios.post('/api/requests', formData, {
+  headers: {
+    'Content-Type': 'multipart/form-data',
+  },
+});
+```
+
+> في `react-query` نفس الفكرة، بس تحط الكود ده جوة `mutationFn`.
+
+---
+
+## 5. عرض الصور في لوحة الإدمن
+
+في `AdminDashboard.tsx` بعد ما تجيب الطلبات من `/api/requests`:
+
+```tsx
+{request.files && request.files.length > 0 && (
+  <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mt: 1 }}>
+    {request.files.map((file: any) => (
+      <img
+        key={file.id}
+        src={`${API_BASE_URL}${file.file_url}`} // مثال: http://localhost:3000 + /uploads/requests/xxx.png
+        alt={file.original_name}
+        style={{ width: 80, height: 80, objectFit: 'cover', borderRadius: 8 }}
+      />
+    ))}
+  </Box>
+)}
+```
+
+لو في ملفات أكبر/أكثر حساسية (مثلاً جواز سفر):
+
+* ممكن تخلي الصور تظهر صغيرة (thumbnail).
+* وتسمح بفتحها في Dialog أو صفحة جديدة.
+
+---
+
+## 6. نقاط مهمة توضّحها للمبرمج
+
+* **الأمان:**
+
+  * قبول فقط `image/*`.
+  * تحديد حجم أقصى (مثل 5MB).
+  * لازم تجنب رفع ملفات تنفيذية (exe, js, …).
+* **التخزين:**
+
+  * في البداية ممكن `uploads/requests/` على نفس السيرفر.
+  * لاحقًا ممكن تنقل لـ S3 أو Cloudinary من غير ما تغيّر تصميم الداتابيز (بس تغيّر `file_url`).
+* **التنظيف:**
+
+  * لما تحذف طلب، الـ `request_files` تنمسح أوتوماتيك بالداتابيز.
+  * لكن لو حابب تحذف الملفات نفسها من الهارد ديسك، تحتاج سكربت زيادة في `DELETE /api/requests/:id` عشان يمسحها من الفولدر.
+
+---
+
+لو حاب تدي المبرمج ملف جاهز، أقدر أكتب ليك في رسالة جاية:
+
+* ملف SQL كاملة فيها `requests + request_files`.
+* ملف `upload.js` كامل.
+* مثال مبسّط لـ `RequestForm.tsx` محدث بملف الصور.
