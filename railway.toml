@@ -1,5 +1,12 @@
 [build]
-rootDirectory = "."
+builder = "nixpacks"
+buildCommand = "npm install && npm run build"
+watchPatterns = ["/src/**", "/public/**"]
 
 [deploy]
-startCommand = "node futurevision-api/server.js"
+startCommand = "npm run preview"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+
+[nixpacks]
+path = "./futurevision-ui"
