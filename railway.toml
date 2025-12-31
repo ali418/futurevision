@@ -1,2 +1,5 @@
 [build]
-rootDirectory = "futurevision-ui"
+rootDirectory = "."
+
+[deploy]
+startCommand = "node futurevision-api/server.js"
